@@ -1,0 +1,3 @@
+multx_path	/home/ben/local/src/fastq-multx/fastq-multx
+usearch_path	/home/ben/local/src/usearch10.0.240_i86linux32
+ncbi_nt_path    /datab/brubin/lasio/barcoding/short_fragment/blastdb/nt
