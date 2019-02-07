@@ -1,4 +1,4 @@
-# TrAC-Seq readme
+# Bee barcode processing
 
 The config.txt should contain paths to the binary exectuables for fastq-multx and USEARCH. If you want to run BLAST to obtain a rough taxonomic identification for each sample, you will also need to specify the path to a local download of NCBI's nt database. Biopython is also needed. Refer to "config.txt". 
 
