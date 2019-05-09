@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import time
 from Bio import SeqIO
 from Bio import Seq
 from Bio.SeqRecord import SeqRecord
@@ -24,19 +25,23 @@ parser.add_option("-x", "--i5_index_file", dest = "i5_index_file", type = str, h
 parser.add_option("-s", "--i7_index_file", dest = "i7_index_file", type = str, help = "gzipped i7 index read file (read 2)")
 parser.add_option("-1", "--R1_file", dest = "r1_file", type = str, help = "gzipped read 1 file")
 parser.add_option("-2", "--R2_file", dest = "r2_file", type = str, help = "gzipped read 2 file", default = "None")
+parser.add_option("-d", "--adapter_file", dest = "adapter_file", type = str, help = "fasta file of adapter sequences")
 parser.add_option("-p", "--num_threads", dest = "num_threads", type = int, default = 1, help = "Number of threads to use for sequencing trimming and assembly [default = 1]")
 parser.add_option("-c", "--config_file", dest = "config_file", default = "config.txt", type = str, help = "Config file with program paths [default = config.txt]")
-parser.add_option("-m", "--min_len", dest = "min_len", default = "350", type = str, help = "Minimum expected length of locus.")
 parser.add_option("-o", "--output_db", dest = "output_db", type = str, default = "output.txt", help = "Output database file name [default = output.txt]")
 parser.add_option("-e", "--email", dest = "email", type = str, help = "Email address. Required if you want to submit sequences to NCBI BLAST. If you don't set this then BLAST will not be run. If you do set it, then it will.", default = None)
+parser.add_option("-g", "--collections_file", dest = "collections_file", type = str, help = "Three column file with <site><\\t><plate><\\t><well>", default = None)
 
 (options, args) = parser.parse_args()
 
 USE_NCBI_BLAST_SERVER = False
+ADD_SITE_CODE = False
 
 if options.email != None:
     Entrez.email = options.email
     USE_NCBI_BLAST_SERVER = True
+if options.collections_file != None:
+    ADD_SITE_CODE = True
 
 def read_config():
     reader = open(options.config_file, 'rU')
@@ -103,7 +108,7 @@ def merge_pairs_worker(param_list):
     locus = param_list[1]
     sample = param_list[2]
     path_dic = param_list[3]
-    cmd = [path_dic["usearch_path"], "-fastq_mergepairs", "./plates/%s/%s/demult/%s_R1.fastq" % (plate, locus, sample), "-reverse", "./plates/%s/%s/demult/%s_R2.fastq" % (plate, locus, sample), "-fastqout", "./plates/%s/%s/merged/%s_merged.fq" % (plate, locus, sample), "-relabel", "%s_" % sample, "-fastqout_notmerged_fwd", "./plates/%s/%s/merged/%s_notmerged_R1.fq" % (plate, locus, sample),"-fastqout_notmerged_rev", "./plates/%s/%s/merged/%s_notmerged_R2.fq" % (plate, locus, sample), "-report", "./plates/%s/%s/merged/%s_report.txt" % (plate, locus, sample), "-fastq_minmergelen", options.min_len, "-fastq_maxdiffs", "20"]
+    cmd = [path_dic["usearch_path"], "-fastq_mergepairs", "./plates/%s/%s/demult/%s_R1.fastq" % (plate, locus, sample), "-reverse", "./plates/%s/%s/demult/%s_R2.fastq" % (plate, locus, sample), "-fastqout", "./plates/%s/%s/merged/%s_merged.fq" % (plate, locus, sample), "-relabel", "%s_" % sample, "-fastqout_notmerged_fwd", "./plates/%s/%s/merged/%s_notmerged_R1.fq" % (plate, locus, sample),"-fastqout_notmerged_rev", "./plates/%s/%s/merged/%s_notmerged_R2.fq" % (plate, locus, sample), "-report", "./plates/%s/%s/merged/%s_report.txt" % (plate, locus, sample), "-fastq_minmergelen", "360", "-fastq_maxdiffs", "20"]
     subprocess.call(cmd)
     seq_count = 0
     reader = SeqIO.parse("./plates/%s/%s/merged/%s_merged.fq" % (plate, locus, sample), format = 'fastq')
@@ -130,33 +135,6 @@ def merge_pairs_worker(param_list):
     subprocess.call(cmd, stderr = FNULL)
     most_abundant_read("./plates/%s/%s/derep/%s_cluster.fa" % (plate, locus, sample), "./plates/%s/%s/derep/%s_common.fa" % (plate, locus, sample), path_dic)
 
-
-def closest_blast(inname, inseq, path_dic):
-    inname = inname.split(";")[0]
-    temp_file = open("./plates/temp/%s_temp.fa" % inname, 'w')
-    temp_file.write(">%s\n%s\n" % (inname, inseq))
-    temp_file.close()
-    blastn_cline = NcbiblastnCommandline(query="./plates/temp/%s_temp.fa" % inname, db = path_dic["ncbi_nt_path"], outfmt = 5, out = "./plates/temp/%s_temp.xml" % inname)
-    
-    print blastn_cline
-    stdout, stderr = blastn_cline()
-    result_handle = open("./plates/temp/%s_temp.xml" % inname)
-    os.remove("./plates/temp/%s_temp.fa" % inname)
-    os.remove("./plates/temp/%s_temp.xml" % inname)
-    blast_record = NCBIXML.read(result_handle)
-    if len(blast_record.alignments) < 1:
-        return SeqRecord(Seq.Seq(""), id = "NOTHYMENOPTERA")
-    besthit = blast_record.alignments[0]
-    blast_seq = besthit.hsps[0].sbjct
-    gi = besthit.title.split("|")[1]
-    ncbiResult = Entrez.efetch(db="nucleotide", id=gi, rettype="gb", retmode="text")
-    ncbiResultRec = SeqIO.read(ncbiResult, "gb")
-    cur_species = ncbiResultRec.annotations["organism"].replace(" ", "_")
-    if "Hymenoptera" in ncbiResultRec.annotations["taxonomy"]:
-        return SeqRecord(Seq.Seq(blast_seq), id = "%s_%s" % (gi, cur_species))
-    else:
-        return SeqRecord(Seq.Seq(""), id = "NOTHYMENOPTERA")
-
 def most_abundant_read(infile, outfile, path_dic):
     reader = SeqIO.parse(infile, format = 'fasta')
     seq_dic = {}
@@ -177,14 +155,7 @@ def most_abundant_read(infile, outfile, path_dic):
             common_seqs[k] = v
     output = open(outfile, 'w')
     for k, v in common_seqs.items():
-        if USE_NCBI_BLAST_SERVER:
-            besthit = closest_blast(k, v, path_dic)
-            if besthit.id == "NOTHYMENOPTERA":
-                continue
-            output.write(">%s\n%s\n" % (k, v))
-            output.write(">gi|%s\n%s\n" % (besthit.id, str(besthit.seq)))
-        else:
-            output.write(">%s\n%s\n" % (k, v))
+        output.write(">%s\n%s\n" % (k, v))
     output.close()
 
 def merge_pairs(i5_file, i7_file, path_dic):
@@ -229,26 +200,78 @@ def compile_seqs(i5_file, i7_file, output_db):
             if not os.path.exists("./plates/%s/%s/derep/%s_common.fa" % (plate, locus, sample)):
                 continue
             reader = SeqIO.parse("./plates/%s/%s/derep/%s_common.fa" % (plate, locus, sample), format = 'fasta')
-            if USE_NCBI_BLAST_SERVER:
-                for rec in reader:
-                    if rec.id.startswith("gi"):
-                        taxon = rec.id
-                        outfile.write(">%s%s\n%s\n" % (cur_sample, taxon, cur_seq))
-                    else:
-                        cur_sample = rec.id
-                        cur_seq = str(rec.seq)
-            else:
-                for rec in reader:
-                    outfile.write(">%s\n%s\n" % (rec.id, str(rec.seq)))
+            for rec in reader:
+                outfile.write(">%s\n%s\n" % (rec.id, str(rec.seq)))
     outfile.close()
 
+def get_best_blast_hit(infile, path_dic):
+    reader = SeqIO.parse(infile, format = 'fasta')
+    seq_dic = {}
+    for rec in reader:
+        seq_dic[rec.id[0:-1]] = str(rec.seq)
+    inbase = infile.rsplit(".", 1)[0]
+    blastn_cline = NcbiblastnCommandline(query=infile, db = path_dic["ncbi_nt_path"], outfmt = 5, out = "%s_blastn.xml" % inbase, num_threads = options.num_threads, max_target_seqs = 1)
+    stdout, stderr = blastn_cline()
+    result_handle = open("%s_blastn.xml" % inbase)
+    outfile = open("%s_bestblast.fa" % inbase, 'w')
+    blast_records = NCBIXML.parse(result_handle)
+    for blast_record in blast_records:
+        cur_query = blast_record.query
+        if len(blast_record.alignments) < 1:
+            outfile.write(">%s;no_blast_hit\n%s\n" % (cur_query, seq_dic[cur_query]))
+            continue
+        besthit = blast_record.alignments[0]
+        blast_seq = besthit.hsps[0].sbjct
+        hitlen = besthit.hsps[0].align_length
+        idents = float(besthit.hsps[0].identities)
+        percid = round(idents / hitlen, 4)
+        percid = 100*percid
+        gi = besthit.title.split("|")[1]
+        ncbiResult = Entrez.efetch(db="nucleotide", id=gi, rettype="gb", retmode="text")
+        time.sleep(5) #don't overwhelm NCBI
+        ncbiResultRec = SeqIO.read(ncbiResult, "gb")
+        cur_species = ncbiResultRec.annotations["organism"].replace(" ", "_")
+        
+        if "Hymenoptera" in ncbiResultRec.annotations["taxonomy"]:
+            outfile.write(">%s;%s;%s;%s;%s;%s\n%s\n" % (cur_query, gi, cur_species, percid, hitlen, len(seq_dic[cur_query]), seq_dic[cur_query]))
+        else:
+            outfile.write(">%s;%s;%s;%s;%s;%s;not_hymenoptera\n%s\n" % (cur_query, gi, cur_species, percid, hitlen, len(seq_dic[cur_query]), seq_dic[cur_query]))
+        outfile.flush()
+    outfile.close()
+
+def add_site_code(infile, collections_file):
+    reader = open(collections_file, 'rU')
+    site_dic = {}
+    for line in reader:
+        if line.startswith("#"):
+            continue
+        cur_line = line.strip().split("\t")
+        cur_id = cur_line[1] + "-" + cur_line[2]
+        cur_site = cur_line[0]
+        site_dic[cur_id] = cur_site
+    outfile = open(infile.rsplit(".", 1)[0] + "_codes.fa", 'w')
+    reader = SeqIO.parse(infile, format = 'fasta')
+    for rec in reader:
+        cur_info = rec.id.split(";")
+        cur_id = cur_info[0].split("_")[0]
+
+        outfile.write(">%s;%s;%s\n%s\n" % (cur_info[0], site_dic[cur_id], ";".join(cur_info[1:]), str(rec.seq)))
+    outfile.close()
+    
 def main():
     path_dic = read_config()
-    compile_seqs(options.i5_map, options.i7_map, options.output_db)
     demult_i5(options.i5_index_file, options.i7_index_file, options.r1_file, options.r2_file, options.i5_map, path_dic)
     demult_i7(options.i5_map, options.i7_map, path_dic)
     merge_pairs(options.i5_map, options.i7_map, path_dic)
     compile_seqs(options.i5_map, options.i7_map, options.output_db)
-
+    if USE_NCBI_BLAST_SERVER:
+        get_best_blast_hit(options.output_db, path_dic)
+        if ADD_SITE_CODE:
+            inbase = options.output_db.rsplit(".", 1)[0]
+            add_site_code(inbase + "_bestblast.fa", options.collections_file)
+    else:
+        if ADD_SITE_CODE:
+              add_site_code(option.output_db, options.collections_file)
+        
 if __name__ == '__main__':
     main()
